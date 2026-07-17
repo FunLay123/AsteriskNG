@@ -23,6 +23,7 @@ import engine.root.RootModeStartConfig
 import engine.root.RootRuntimeLayout
 import engine.root.RootStartConfig
 import engine.root.buildAsteriskdConfig
+import engine.root.buildRootBypassDirectInbound
 import engine.root.buildRootSharedProxyInbounds
 import engine.root.tun2SocksInternalProxyPortValue
 import engine.root.toRootRuntimeLayout
@@ -64,6 +65,7 @@ internal fun RootConfigBuildContext.buildTun2SocksStartConfig(): Tun2SocksStartC
     val rootStartConfig = buildRootStartConfig(
         inbounds = appState.buildTun2SocksInbounds(localProxyOptions, socks5ProxyPort),
         dnsHijackInboundTags = listOf(XrayTags.TUN2SOCKS_INBOUND),
+        bypassDirectInboundTags = listOf(XrayTags.TUN2SOCKS_BYPASS_INBOUND),
     )
     return Tun2SocksStartConfig(
         root = rootStartConfig,
@@ -102,6 +104,7 @@ private fun AppState.buildTun2SocksInbounds(
 ): List<JsonObject> {
     return buildList {
         add(buildTun2SocksInbound(this@buildTun2SocksInbounds, socks5ProxyPort))
+        add(buildRootBypassDirectInbound(XrayTags.TUN2SOCKS_BYPASS_INBOUND, RootTun2SocksBypassPort))
         add(buildLocalSocksInbound(this@buildTun2SocksInbounds, XrayTags.LOCAL_SOCKS_INBOUND, localProxyOptions))
         addAll(
             buildRootSharedProxyInbounds(

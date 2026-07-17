@@ -23,6 +23,7 @@ import engine.root.appendRootFakeDnsIcmpReplyRules
 import engine.root.appendRootIpv6DnsRejectCleanupRules
 import engine.root.appendRootIpv6DnsRejectRules
 import engine.root.appendScript
+import engine.xray.XrayFakeDnsIpv4Pool
 import utils.shellQuote
 
 internal fun RootIptablesConfig.buildSetupRulesCommand(
@@ -52,6 +53,15 @@ internal fun RootIptablesConfig.buildSetupRulesCommand(
         }
         if (enableFakeDns) {
             appendRootFakeDnsIcmpReplyRules(cleanupExistingRules)
+            appendFakednsPoolBypassNatRedirectRules(
+                command = RootIptablesCommand,
+                mode = this@buildSetupRulesCommand.proxyAppListMode,
+                forcedBypassUids = this@buildSetupRulesCommand.forcedBypassUids,
+                uids = this@buildSetupRulesCommand.proxyApplicationUids,
+                whitelistSystemUids = RootProxyAppWhitelistSystemUids,
+                fakednsPoolCidr = XrayFakeDnsIpv4Pool,
+                bypassPort = RootTun2SocksBypassPort,
+            )
         }
     }
 }
@@ -60,6 +70,13 @@ internal fun RootIptablesConfig.buildCleanupRulesCommand(): String {
     return buildString {
         appendIptablesVariantCleanupRules(this@buildCleanupRulesCommand, Tun2SocksIptablesVariant.forIpv4(this@buildCleanupRulesCommand))
         appendRootFakeDnsIcmpReplyCleanupRules()
+        appendFakednsPoolBypassNatRedirectCleanupRules(
+            command = RootIptablesCommand,
+            forcedBypassUids = this@buildCleanupRulesCommand.forcedBypassUids,
+            uids = this@buildCleanupRulesCommand.proxyApplicationUids,
+            whitelistSystemUids = RootProxyAppWhitelistSystemUids,
+            fakednsPoolCidr = XrayFakeDnsIpv4Pool,
+        )
         appendRootIpv6DnsRejectCleanupRules()
         appendIptablesVariantCleanupRules(this@buildCleanupRulesCommand, Tun2SocksIptablesVariant.forIpv6(this@buildCleanupRulesCommand))
         appendAsteriskdBypassAnchorCleanup(RootIptablesCommand, ipv6 = false)
@@ -179,6 +196,65 @@ private fun StringBuilder.appendIptablesVariantCleanupRules(
         rule = "priority $RootProxyRouteRulePriority fwmark ${config.mark} lookup ${variant.routeTable}",
     )
     appendScript("${variant.ipCommand} route flush table ${variant.routeTable} 2>/dev/null || true")
+}
+
+/**
+ * For excluded UIDs, redirects (rather than bypasses) connections whose destination falls
+ * inside the FakeDNS pool CIDR. tun2socks does not use TPROXY anywhere: its own traffic
+ * capture works entirely via mangle-table fwmark + `ip rule`/`ip route` policy routing out
+ * through the `asterisk0` tun device. There is no local per-packet redirect-to-a-different-port
+ * mechanism like TPROXY provides here, so this uses a nat-table `REDIRECT` (the same pattern
+ * used by `appendRootFakeDnsIcmpReplyRules` for FakeDNS-pool ICMP) to rewrite the destination to
+ * this device's own dedicated bypass-direct Xray inbound, which sniffs the real domain and
+ * routes it to the direct/freedom outbound instead of dialing the synthetic FakeDNS IP.
+ */
+private fun StringBuilder.appendFakednsPoolBypassNatRedirectRules(
+    command: String,
+    mode: Int,
+    forcedBypassUids: List<Int>,
+    uids: List<Int>,
+    whitelistSystemUids: List<Int>,
+    fakednsPoolCidr: String,
+    bypassPort: Int,
+) {
+    fun appendRedirectForUid(uid: Int) {
+        appendScript(
+            """
+            $command -t nat -A OUTPUT -d ${fakednsPoolCidr.shellQuote()} -m owner --uid-owner $uid -p tcp -j REDIRECT --to-ports $bypassPort
+            $command -t nat -A OUTPUT -d ${fakednsPoolCidr.shellQuote()} -m owner --uid-owner $uid -p udp -j REDIRECT --to-ports $bypassPort
+            """,
+        )
+    }
+    forcedBypassUids.distinct().forEach(::appendRedirectForUid)
+    when (mode) {
+        ProxyAppListModeBlacklist -> uids.distinct().forEach(::appendRedirectForUid)
+        ProxyAppListModeWhitelist -> {
+            val allowed = (uids.distinct() + whitelistSystemUids).distinct()
+            if (allowed.isNotEmpty()) {
+                val negatedOwners = allowed.joinToString(" ") { uid -> "-m owner ! --uid-owner $uid" }
+                appendScript(
+                    """
+                    $command -t nat -A OUTPUT -d ${fakednsPoolCidr.shellQuote()} $negatedOwners -p tcp -j REDIRECT --to-ports $bypassPort
+                    $command -t nat -A OUTPUT -d ${fakednsPoolCidr.shellQuote()} $negatedOwners -p udp -j REDIRECT --to-ports $bypassPort
+                    """,
+                )
+            }
+        }
+        else -> Unit
+    }
+}
+
+private fun StringBuilder.appendFakednsPoolBypassNatRedirectCleanupRules(
+    command: String,
+    forcedBypassUids: List<Int>,
+    uids: List<Int>,
+    whitelistSystemUids: List<Int>,
+    fakednsPoolCidr: String,
+) {
+    (forcedBypassUids + uids + whitelistSystemUids).distinct().forEach { uid ->
+        appendDeleteRuleLoop(command, "OUTPUT", "-d ${fakednsPoolCidr.shellQuote()} -m owner --uid-owner $uid -p tcp -j REDIRECT", table = "nat")
+        appendDeleteRuleLoop(command, "OUTPUT", "-d ${fakednsPoolCidr.shellQuote()} -m owner --uid-owner $uid -p udp -j REDIRECT", table = "nat")
+    }
 }
 
 private fun StringBuilder.appendPreroutingTrafficMarkRules(
