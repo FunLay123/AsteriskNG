@@ -203,7 +203,7 @@ private fun StringBuilder.appendDnsBypassNatRules(
     config: RootIptablesConfig,
     variant: Tun2SocksIptablesVariant,
 ) {
-    val realDnsServer = if (variant.ipv6) RootDnsBypassServerIpv6 else RootDnsBypassServerIpv4
+    val realDnsServer = if (variant.ipv6) config.dnsBypassServerIpv6 else config.dnsBypassServerIpv4
     appendScript(
         """
         ${variant.command} -t nat -N ${variant.dnsOutputChain} 2>/dev/null || true
