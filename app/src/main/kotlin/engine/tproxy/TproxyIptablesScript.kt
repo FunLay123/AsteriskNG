@@ -180,6 +180,12 @@ private fun StringBuilder.appendIptablesVariantSetupRules(
         appendDummyPreroutingRules(variant.command, dummyInterface, port)
     }
     appendOutputUidReturnRules(variant.command, variant.outputChain, config.forcedBypassUids)
+    appendOutputApplicationBypassRules(
+        command = variant.command,
+        chain = variant.outputChain,
+        mode = config.proxyAppListMode,
+        uids = config.proxyApplicationUids,
+    )
     if (enableLocalDns) {
         appendUdpDnsMarkRule(variant.command, variant.outputChain, config.mark, ownerBypassGid = RootXrayGid)
     }

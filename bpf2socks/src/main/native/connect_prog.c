@@ -1179,6 +1179,12 @@ static int build_ipv4_sock_addr_prog(
     if (attach_type == BPF_CGROUP_UDP4_SENDMSG && protocol == BPF2SOCKS_PROTO_UDP && !protocol_from_context) {
         emit_udp_peer_cache_restore_v4(&b, udp_peer_map_fd);
     }
+    emit(&b, BPF_STX_MEM(BPF_W, BPF_REG_10, BPF_REG_7, STACK_SAVED_V4_ADDR));
+    emit(&b, BPF_STX_MEM(BPF_W, BPF_REG_10, BPF_REG_8, STACK_SAVED_V4_PORT));
+    emit_uid_policy(&b, policy, uid_map_fd, bypass_jumps, &bypass_jump_count, drop_jumps, &drop_jump_count);
+    emit(&b, BPF_LDX_MEM(BPF_W, BPF_REG_7, BPF_REG_10, STACK_SAVED_V4_ADDR));
+    emit(&b, BPF_LDX_MEM(BPF_W, BPF_REG_8, BPF_REG_10, STACK_SAVED_V4_PORT));
+    // Uid policy runs first so bypassed/excluded uids never reach the DNS force-proxy check.
     emit_ipv4_dns_force_proxy_policy_from_regs(
         &b,
         policy,
@@ -1186,11 +1192,6 @@ static int build_ipv4_sock_addr_prog(
         protocol_from_context,
         force_proxy_jumps,
         &force_proxy_jump_count);
-    emit(&b, BPF_STX_MEM(BPF_W, BPF_REG_10, BPF_REG_7, STACK_SAVED_V4_ADDR));
-    emit(&b, BPF_STX_MEM(BPF_W, BPF_REG_10, BPF_REG_8, STACK_SAVED_V4_PORT));
-    emit_uid_policy(&b, policy, uid_map_fd, bypass_jumps, &bypass_jump_count, drop_jumps, &drop_jump_count);
-    emit(&b, BPF_LDX_MEM(BPF_W, BPF_REG_7, BPF_REG_10, STACK_SAVED_V4_ADDR));
-    emit(&b, BPF_LDX_MEM(BPF_W, BPF_REG_8, BPF_REG_10, STACK_SAVED_V4_PORT));
     emit_ipv4_policy_checks_from_regs(
         &b,
         policy,
@@ -1334,13 +1335,6 @@ static int build_ipv6_sock_addr_prog(
     if (attach_type == BPF_CGROUP_UDP6_SENDMSG && protocol == BPF2SOCKS_PROTO_UDP && !protocol_from_context) {
         emit_udp_peer_cache_restore_v6(&b, udp_peer_map_fd);
     }
-    emit_ipv6_dns_drop_policy(
-        &b,
-        policy,
-        protocol,
-        protocol_from_context,
-        drop_jumps,
-        &drop_jump_count);
     emit(&b, BPF_STX_MEM(BPF_W, BPF_REG_10, BPF_REG_7, STACK_SAVED_V6_WORD0));
     emit(&b, BPF_STX_MEM(BPF_W, BPF_REG_10, BPF_REG_8, STACK_SAVED_V6_WORD1));
     emit(&b, BPF_STX_MEM(BPF_W, BPF_REG_10, BPF_REG_9, STACK_SAVED_V6_WORD2));
@@ -1352,6 +1346,14 @@ static int build_ipv6_sock_addr_prog(
     emit(&b, BPF_LDX_MEM(BPF_W, BPF_REG_9, BPF_REG_10, STACK_SAVED_V6_WORD2));
     emit(&b, BPF_LDX_MEM(BPF_W, BPF_REG_4, BPF_REG_10, STACK_SAVED_V6_LAST_WORD));
     emit(&b, BPF_LDX_MEM(BPF_W, BPF_REG_5, BPF_REG_10, STACK_SAVED_PORT));
+    // Uid policy runs first so bypassed/excluded uids never reach the DNS drop check.
+    emit_ipv6_dns_drop_policy(
+        &b,
+        policy,
+        protocol,
+        protocol_from_context,
+        drop_jumps,
+        &drop_jump_count);
     emit_ipv6_policy_checks(
         &b,
         policy,

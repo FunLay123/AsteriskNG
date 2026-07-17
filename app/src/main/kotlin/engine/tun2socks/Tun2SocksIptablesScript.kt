@@ -214,6 +214,12 @@ private fun StringBuilder.appendOutputTrafficMarkRules(
     enableLocalDns: Boolean,
 ) {
     appendOutputUidReturnRules(variant.command, variant.outputChain, config.forcedBypassUids)
+    appendOutputApplicationBypassRules(
+        command = variant.command,
+        chain = variant.outputChain,
+        mode = config.proxyAppListMode,
+        uids = config.proxyApplicationUids,
+    )
     if (enableLocalDns) {
         appendUdpDnsMarkRule(
             command = variant.command,
