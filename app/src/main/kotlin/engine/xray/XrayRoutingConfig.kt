@@ -27,6 +27,7 @@ internal fun AppState.buildXrayRoutingPlan(
     routeProxyDns: Boolean,
     routeDirectDns: Boolean,
     dnsHijackInboundTags: List<String>,
+    bypassDirectInboundTags: List<String> = emptyList(),
 ): XrayRoutingPlan {
     val domainStrategy = routeDomainStrategy.toXrayRoutingDomainStrategy()
     val defaultTarget = defaultRouteTarget(routeTargets)
@@ -37,6 +38,7 @@ internal fun AppState.buildXrayRoutingPlan(
             routeProxyDns = routeProxyDns,
             routeDirectDns = routeDirectDns,
             dnsHijackInboundTags = dnsHijackInboundTags,
+            bypassDirectInboundTags = bypassDirectInboundTags,
             defaultTarget = defaultTarget,
         ),
         balancers = balancers,
@@ -63,6 +65,7 @@ private fun AppState.routingRules(
     routeProxyDns: Boolean,
     routeDirectDns: Boolean,
     dnsHijackInboundTags: List<String>,
+    bypassDirectInboundTags: List<String>,
     defaultTarget: XrayRouteTarget?,
 ): JsonArray {
     return buildJsonArray {
@@ -72,6 +75,7 @@ private fun AppState.routingRules(
         if (effectiveLocalDnsEnabled) {
             buildXrayDnsHijackRule(dnsHijackInboundTags)?.let(::add)
         }
+        buildXrayBypassDirectRule(bypassDirectInboundTags)?.let(::add)
         if (routeDirectDns) {
             routeTargets[XrayTags.DIRECT]?.let { target -> add(buildDnsUpstreamRoute(XrayTags.DIRECT_DNS, target)) }
         }
@@ -108,6 +112,15 @@ internal fun buildXrayDnsHijackRule(inboundTags: List<String>): JsonObject? {
         put("network", "tcp,udp")
         put("port", "53")
         put("outboundTag", XrayTags.DNS_OUT)
+    }
+}
+
+internal fun buildXrayBypassDirectRule(inboundTags: List<String>): JsonObject? {
+    val tags = inboundTags.toTrimmedNonEmptyDistinctList()
+    if (tags.isEmpty()) return null
+    return buildJsonObject {
+        put("inboundTag", tags.toJsonStringArray())
+        put("outboundTag", XrayTags.DIRECT)
     }
 }
 

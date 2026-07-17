@@ -18,6 +18,7 @@ import engine.xray.XrayCoreLogPaths
 import engine.xray.XrayProtocols
 import engine.xray.buildXrayOutboundPlan
 import engine.xray.prepareXrayCoreLogPaths
+import engine.xray.toJsonStringArray
 import engine.xray.validateXrayExternalRoutingResources
 import features.resources.runtime.XrayResourceFilePaths
 import features.resources.runtime.prepareXrayResourceFilePaths
@@ -158,6 +159,41 @@ private fun buildRootHttpProxyInbound(
             buildJsonObject {
                 put("allowTransparent", false)
                 put("userLevel", 0)
+            },
+        )
+    }
+}
+
+internal fun buildRootBypassDirectInbound(tag: String, port: Int): JsonObject {
+    return buildJsonObject {
+        put("tag", tag)
+        put("port", port)
+        put("protocol", XrayProtocols.TUNNEL)
+        put(
+            "settings",
+            buildJsonObject {
+                put("allowedNetwork", "tcp,udp")
+                put("followRedirect", true)
+                put("userLevel", 0)
+            },
+        )
+        put(
+            "streamSettings",
+            buildJsonObject {
+                put(
+                    "sockopt",
+                    buildJsonObject {
+                        put("tproxy", "tproxy")
+                    },
+                )
+            },
+        )
+        put(
+            "sniffing",
+            buildJsonObject {
+                put("enabled", true)
+                put("destOverride", listOf("http", "tls", "quic").toJsonStringArray())
+                put("routeOnly", false)
             },
         )
     }
