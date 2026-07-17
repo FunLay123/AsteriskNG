@@ -3,6 +3,8 @@
 
 package engine.root
 
+import app.modes.ProxyAppListModeBlacklist
+import app.modes.ProxyAppListModeWhitelist
 import engine.xray.XrayFakeDnsIpv4Pool
 import utils.shellQuote
 
@@ -211,4 +213,68 @@ internal fun StringBuilder.appendRootFakeDnsIcmpReplyCleanupRules() {
         $RootIptablesCommand -t nat -X $RootFakeDnsIcmpReplyPreroutingChain 2>/dev/null || true
         """,
     )
+}
+
+/**
+ * For excluded UIDs, redirects (rather than bypasses) connections whose destination falls
+ * inside the FakeDNS pool CIDR. A bypassed app's own DNS never reaches this pool correctly
+ * attributed (netd resolves DNS under its own uid, not the app's, so DNS traffic can never be
+ * correctly attributed to the excluded app's uid via -m owner --uid-owner matching) so the
+ * app is handed a synthetic FakeDNS IP regardless of exclusion. Its real data connection,
+ * opened by the app's own socket, IS correctly attributable — so instead of letting that
+ * connection dial the synthetic IP directly (which always fails), this sends it into a
+ * dedicated tunnel inbound that sniffs the real domain and redials it, then routes straight
+ * to the direct/freedom outbound.
+ */
+internal fun StringBuilder.appendOutputFakednsPoolBypassRedirectRules(
+    command: String,
+    chain: String,
+    mode: Int,
+    forcedBypassUids: List<Int>,
+    uids: List<Int>,
+    whitelistSystemUids: List<Int>,
+    fakednsPoolCidr: String,
+    bypassPort: Int,
+    onIp: String,
+    mark: String,
+) {
+    fun appendRedirectForUid(uid: Int) {
+        appendScript(
+            """
+            $command -t mangle -A $chain -d ${fakednsPoolCidr.shellQuote()} -m owner --uid-owner $uid -p tcp -j TPROXY --on-port $bypassPort --on-ip $onIp --tproxy-mark $mark
+            $command -t mangle -A $chain -d ${fakednsPoolCidr.shellQuote()} -m owner --uid-owner $uid -p udp -j TPROXY --on-port $bypassPort --on-ip $onIp --tproxy-mark $mark
+            """,
+        )
+    }
+    forcedBypassUids.distinct().forEach(::appendRedirectForUid)
+    when (mode) {
+        ProxyAppListModeBlacklist -> uids.distinct().forEach(::appendRedirectForUid)
+        ProxyAppListModeWhitelist -> {
+            val allowed = (uids.distinct() + whitelistSystemUids).distinct()
+            if (allowed.isNotEmpty()) {
+                val negatedOwners = allowed.joinToString(" ") { uid -> "-m owner ! --uid-owner $uid" }
+                appendScript(
+                    """
+                    $command -t mangle -A $chain -d ${fakednsPoolCidr.shellQuote()} $negatedOwners -p tcp -j TPROXY --on-port $bypassPort --on-ip $onIp --tproxy-mark $mark
+                    $command -t mangle -A $chain -d ${fakednsPoolCidr.shellQuote()} $negatedOwners -p udp -j TPROXY --on-port $bypassPort --on-ip $onIp --tproxy-mark $mark
+                    """,
+                )
+            }
+        }
+        else -> Unit
+    }
+}
+
+internal fun StringBuilder.appendOutputFakednsPoolBypassRedirectCleanupRules(
+    command: String,
+    chain: String,
+    forcedBypassUids: List<Int>,
+    uids: List<Int>,
+    whitelistSystemUids: List<Int>,
+    fakednsPoolCidr: String,
+) {
+    (forcedBypassUids + uids + whitelistSystemUids).distinct().forEach { uid ->
+        appendDeleteRuleLoop(command, chain, "-d ${fakednsPoolCidr.shellQuote()} -m owner --uid-owner $uid -p tcp -j TPROXY")
+        appendDeleteRuleLoop(command, chain, "-d ${fakednsPoolCidr.shellQuote()} -m owner --uid-owner $uid -p udp -j TPROXY")
+    }
 }
