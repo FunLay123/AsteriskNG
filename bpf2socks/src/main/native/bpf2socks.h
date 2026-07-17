@@ -155,6 +155,8 @@ struct bpf2socks_udp_peer_value {
 struct bpf2socks_runtime_config {
     char socks_host[128];
     uint16_t socks_port;
+    uint16_t bypass_bridge_port;
+    uint16_t bypass_socks_port;
     char listen_host[64];
     uint16_t listen_port;
     char pinned_object_dir[BPF2SOCKS_MAX_PATH_LEN];
@@ -226,6 +228,7 @@ struct bpf2socks_bpf_runtime {
     int bypass_private_cidr4_map_fd;
     int local_interface_cidr4_map_fd;
     int direct_cidr4_map_fd;
+    int fakedns_pool_cidr4_map_fd;
     int proxy_cidr6_map_fd;
     int bypass_private_cidr6_map_fd;
     int local_interface_cidr6_map_fd;
