@@ -7,6 +7,10 @@ import android.content.Context
 import android.content.SharedPreferences
 import app.AppState
 import app.CustomResourceFileState
+import app.modes.ColorModeThemeDark
+import app.modes.ColorModeThemeLight
+import app.modes.ColorModeThemeSystem
+import app.modes.normalizeColorMode
 import androidx.core.content.edit
 
 internal class AppSettingsPreferences(
@@ -25,7 +29,14 @@ internal class AppSettingsPreferences(
             (customResourceFiles.maxOfOrNull { file -> file.id } ?: 0) + 1,
         )
         return defaults.copy(
-            colorMode = preferences.getInt(KeyColorMode, defaults.colorMode),
+            colorMode = preferences.getInt(KeyColorMode, defaults.colorMode).let { storedMode ->
+                when (storedMode) {
+                    ColorModeThemeSystem,
+                    ColorModeThemeLight,
+                    ColorModeThemeDark -> storedMode
+                    else -> normalizeColorMode(storedMode)
+                }
+            },
             languageMode = preferences.getInt(KeyLanguageMode, defaults.languageMode),
             seedIndex = preferences.getInt(KeySeedIndex, defaults.seedIndex),
             nextSubscriptionGroupId = preferences.getInt(

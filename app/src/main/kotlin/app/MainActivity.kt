@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.union
+import androidx.core.view.WindowCompat
 import com.journeyapps.barcodescanner.ScanContract
 import data.AndroidAppStateStore
 import data.AppSettingsPreferences
@@ -104,8 +105,10 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun attachBaseContext(newBase: Context) {
-        val languageMode = AppSettingsPreferences(newBase).load().languageMode
-        super.attachBaseContext(newBase.localizedAppContext(languageMode))
+        val settings = AppSettingsPreferences(newBase).load()
+        super.attachBaseContext(
+            newBase.localizedAppContext(settings.languageMode, settings.colorMode),
+        )
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -163,6 +166,8 @@ class MainActivity : ComponentActivity() {
 
     private fun showAppContent() {
         enableEdgeToEdge()
+        WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightNavigationBars =
+            !applicationContext.currentSystemUiSnapshot().isDark
         setContent {
             App(
                 padding = WindowInsets.systemBars.union(WindowInsets.displayCutout).asPaddingValues(),
