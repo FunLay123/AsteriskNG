@@ -20,6 +20,7 @@ internal data class XrayConfigRequest(
     val directDnsDomains: List<String> = appState.directDnsDomains,
     val dnsHosts: List<String> = appState.dnsHosts,
     val dnsHijackInboundTags: List<String> = listOf(XrayTags.VPN_TUN_INBOUND),
+    val bypassDirectInboundTags: List<String> = emptyList(),
     val statsApiConfig: XrayStatsApiConfig? = null,
 )
 
@@ -81,6 +82,7 @@ private fun buildGeneratedXrayConfig(request: XrayConfigRequest): GeneratedXrayC
         routeProxyDns = dnsPlan.routingOptions.routeProxyDns,
         routeDirectDns = dnsPlan.routingOptions.routeDirectDns,
         dnsHijackInboundTags = request.dnsHijackInboundTags,
+        bypassDirectInboundTags = request.bypassDirectInboundTags,
     )
 
     return GeneratedXrayConfig(

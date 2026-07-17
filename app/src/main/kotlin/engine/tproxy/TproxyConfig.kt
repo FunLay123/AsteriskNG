@@ -17,6 +17,7 @@ import engine.root.RootIptablesConfig
 import engine.root.RootModeStartConfig
 import engine.root.RootStartConfig
 import engine.root.buildAsteriskdConfig
+import engine.root.buildRootBypassDirectInbound
 import engine.root.buildRootSharedProxyInbounds
 import engine.xray.XrayProtocols
 import engine.xray.XrayTags
@@ -48,6 +49,7 @@ internal fun RootConfigBuildContext.buildTproxyStartConfig(): TproxyStartConfig 
     val rootStartConfig = buildRootStartConfig(
             inbounds = appState.buildTproxyInbounds(appState.toLocalProxyOptions(), tproxyPort),
             dnsHijackInboundTags = listOf(XrayTags.TPROXY_INBOUND),
+            bypassDirectInboundTags = listOf(XrayTags.TPROXY_BYPASS_INBOUND),
         )
     return TproxyStartConfig(
         root = rootStartConfig,
@@ -69,6 +71,7 @@ private fun AppState.buildTproxyInbounds(
 ): List<JsonObject> {
     return buildList {
         add(buildTproxyTunnelInbound(this@buildTproxyInbounds, tproxyPort))
+        add(buildRootBypassDirectInbound(XrayTags.TPROXY_BYPASS_INBOUND, RootTproxyBypassPort))
         add(buildLocalSocksInbound(this@buildTproxyInbounds, XrayTags.LOCAL_SOCKS_INBOUND, localProxyOptions))
         addAll(
             buildRootSharedProxyInbounds(

@@ -27,7 +27,7 @@ internal fun AppState.buildXrayRoutingPlan(
     routeProxyDns: Boolean,
     routeDirectDns: Boolean,
     dnsHijackInboundTags: List<String>,
-    bypassDirectInboundTags: List<String> = emptyList(),
+    bypassDirectInboundTags: List<String>,
 ): XrayRoutingPlan {
     val domainStrategy = routeDomainStrategy.toXrayRoutingDomainStrategy()
     val defaultTarget = defaultRouteTarget(routeTargets)

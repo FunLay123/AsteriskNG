@@ -16,6 +16,8 @@ import engine.root.appendAsteriskdBypassAnchorCleanup
 import engine.root.appendAsteriskdBypassAnchorJump
 import engine.root.appendDeleteRuleLoop
 import engine.root.appendIpRuleDeleteLoop
+import engine.root.appendOutputFakednsPoolBypassRedirectCleanupRules
+import engine.root.appendOutputFakednsPoolBypassRedirectRules
 import engine.root.appendRootEbpfXtbpfInterfaceTproxyRules
 import engine.root.appendRootEbpfXtbpfMarkRules
 import engine.root.appendRootFakeDnsIcmpReplyCleanupRules
@@ -23,6 +25,7 @@ import engine.root.appendRootFakeDnsIcmpReplyRules
 import engine.root.appendRootIpv6DnsRejectCleanupRules
 import engine.root.appendRootIpv6DnsRejectRules
 import engine.root.appendScript
+import engine.xray.XrayFakeDnsIpv4Pool
 import utils.shellQuote
 
 internal fun RootIptablesConfig.buildSetupRulesCommand(
@@ -123,6 +126,20 @@ private fun StringBuilder.appendIptablesVariantSetupRules(
         appendAsteriskdBypassAnchorJump(variant.command, variant.preroutingChain, ipv6 = variant.tproxyOnIp == "::")
         appendPreroutingMarkedTproxyRules(variant, port, config.mark)
         appendEbpfPreroutingRules(config, variant, port)
+        if (variant.tproxyOnIp != "::") {
+            appendOutputFakednsPoolBypassRedirectRules(
+                command = variant.command,
+                chain = variant.outputChain,
+                mode = config.proxyAppListMode,
+                forcedBypassUids = config.forcedBypassUids,
+                uids = config.proxyApplicationUids,
+                whitelistSystemUids = RootProxyAppWhitelistSystemUids,
+                fakednsPoolCidr = XrayFakeDnsIpv4Pool,
+                bypassPort = RootTproxyBypassPort,
+                onIp = variant.tproxyOnIp,
+                mark = config.mark,
+            )
+        }
         appendOutputUidReturnRules(variant.command, variant.outputChain, config.forcedBypassUids)
         if (enableLocalDns) {
             appendUdpDnsMarkRule(variant.command, variant.outputChain, config.mark, ownerBypassGid = RootXrayGid)
@@ -178,6 +195,20 @@ private fun StringBuilder.appendIptablesVariantSetupRules(
     }
     variant.dummyInterface?.let { dummyInterface ->
         appendDummyPreroutingRules(variant.command, dummyInterface, port)
+    }
+    if (variant.tproxyOnIp != "::") {
+        appendOutputFakednsPoolBypassRedirectRules(
+            command = variant.command,
+            chain = variant.outputChain,
+            mode = config.proxyAppListMode,
+            forcedBypassUids = config.forcedBypassUids,
+            uids = config.proxyApplicationUids,
+            whitelistSystemUids = RootProxyAppWhitelistSystemUids,
+            fakednsPoolCidr = XrayFakeDnsIpv4Pool,
+            bypassPort = RootTproxyBypassPort,
+            onIp = variant.tproxyOnIp,
+            mark = config.mark,
+        )
     }
     appendOutputUidReturnRules(variant.command, variant.outputChain, config.forcedBypassUids)
     if (enableLocalDns) {
@@ -249,6 +280,16 @@ private fun StringBuilder.appendIptablesVariantCleanupRules(
     appendDeleteRuleLoop(variant.command, "OUTPUT", "-p udp -j ${variant.outputChain}")
     appendDeleteRuleLoop(variant.command, "OUTPUT", "-p tcp -j ${variant.dnsOutputChain}", table = "nat")
     appendDeleteRuleLoop(variant.command, "OUTPUT", "-p udp -j ${variant.dnsOutputChain}", table = "nat")
+    if (variant.tproxyOnIp != "::") {
+        appendOutputFakednsPoolBypassRedirectCleanupRules(
+            command = variant.command,
+            chain = variant.outputChain,
+            forcedBypassUids = config.forcedBypassUids,
+            uids = config.proxyApplicationUids,
+            whitelistSystemUids = RootProxyAppWhitelistSystemUids,
+            fakednsPoolCidr = XrayFakeDnsIpv4Pool,
+        )
+    }
     listOf(variant.preroutingChain, variant.outputChain).forEach { chain ->
         appendScript(
             """

@@ -38,6 +38,7 @@ internal class RootConfigBuildContext(
     fun buildRootStartConfig(
         inbounds: List<JsonObject>,
         dnsHijackInboundTags: List<String>,
+        bypassDirectInboundTags: List<String> = emptyList(),
     ): RootStartConfig {
         val xrayConfigJson = XrayConfigFactory.buildXrayConfig(
             XrayConfigRequest(
@@ -47,6 +48,7 @@ internal class RootConfigBuildContext(
                 coreLogPaths = coreLogPaths,
                 dnsHosts = dnsHosts,
                 dnsHijackInboundTags = dnsHijackInboundTags,
+                bypassDirectInboundTags = bypassDirectInboundTags,
             ),
         )
         return appState.toRootStartConfig(
