@@ -12,10 +12,13 @@ import engine.root.RootIptablesCommand
 import engine.root.RootIptablesConfig
 import engine.root.RootProxyRouteRulePriority
 import engine.root.RootProxyAppWhitelistSystemUids
+import engine.root.RootDnsBypassServerIpv4
+import engine.root.RootDnsBypassServerIpv6
 import engine.root.appendAsteriskdBypassAnchorCleanup
 import engine.root.appendAsteriskdBypassAnchorJump
 import engine.root.appendDeleteRuleLoop
 import engine.root.appendIpRuleDeleteLoop
+import engine.root.appendOutputDnsBypassNatRules
 import engine.root.appendRootEbpfXtbpfInterfaceMarkRules
 import engine.root.appendRootEbpfXtbpfMarkRules
 import engine.root.appendRootFakeDnsIcmpReplyCleanupRules
@@ -86,6 +89,9 @@ private fun StringBuilder.appendIptablesVariantSetupRules(
         ${variant.command} -t filter -A ${variant.forwardChain} -o 'asterisk0' -j ACCEPT
         """,
     )
+    if (enableLocalDns) {
+        appendDnsBypassNatRules(config, variant)
+    }
     if (config.enableEbpfRules) {
         if (enableLocalDns) {
             appendUdpDnsMarkRule(variant.command, variant.preroutingChain, config.mark)
@@ -168,6 +174,8 @@ private fun StringBuilder.appendIptablesVariantCleanupRules(
     appendDeleteRuleLoop(variant.command, "PREROUTING", "-j ${variant.preroutingChain}")
     appendDeleteRuleLoop(variant.command, "OUTPUT", "-j ${variant.outputChain}")
     appendDeleteRuleLoop(variant.command, "FORWARD", "-j ${variant.forwardChain}", table = "filter")
+    appendDeleteRuleLoop(variant.command, "OUTPUT", "-p tcp -j ${variant.dnsOutputChain}", table = "nat")
+    appendDeleteRuleLoop(variant.command, "OUTPUT", "-p udp -j ${variant.dnsOutputChain}", table = "nat")
     listOf(variant.preroutingChain, variant.outputChain).forEach { chain ->
         appendScript(
             """
@@ -178,6 +186,8 @@ private fun StringBuilder.appendIptablesVariantCleanupRules(
     }
     appendScript(
         """
+        ${variant.command} -t nat -F ${variant.dnsOutputChain} 2>/dev/null || true
+        ${variant.command} -t nat -X ${variant.dnsOutputChain} 2>/dev/null || true
         ${variant.command} -t filter -F ${variant.forwardChain} 2>/dev/null || true
         ${variant.command} -t filter -X ${variant.forwardChain} 2>/dev/null || true
         """,
@@ -187,6 +197,29 @@ private fun StringBuilder.appendIptablesVariantCleanupRules(
         rule = "priority $RootProxyRouteRulePriority fwmark ${config.mark} lookup ${variant.routeTable}",
     )
     appendScript("${variant.ipCommand} route flush table ${variant.routeTable} 2>/dev/null || true")
+}
+
+private fun StringBuilder.appendDnsBypassNatRules(
+    config: RootIptablesConfig,
+    variant: Tun2SocksIptablesVariant,
+) {
+    val realDnsServer = if (variant.ipv6) RootDnsBypassServerIpv6 else RootDnsBypassServerIpv4
+    appendScript(
+        """
+        ${variant.command} -t nat -N ${variant.dnsOutputChain} 2>/dev/null || true
+        ${variant.command} -t nat -I OUTPUT 1 -p tcp -j ${variant.dnsOutputChain}
+        ${variant.command} -t nat -I OUTPUT 1 -p udp -j ${variant.dnsOutputChain}
+        """,
+    )
+    appendOutputDnsBypassNatRules(
+        command = variant.command,
+        chain = variant.dnsOutputChain,
+        mode = config.proxyAppListMode,
+        forcedBypassUids = config.forcedBypassUids,
+        uids = config.proxyApplicationUids,
+        whitelistSystemUids = RootProxyAppWhitelistSystemUids,
+        realDnsServer = realDnsServer,
+    )
 }
 
 private fun StringBuilder.appendPreroutingTrafficMarkRules(

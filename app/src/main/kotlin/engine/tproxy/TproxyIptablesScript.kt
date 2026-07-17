@@ -12,10 +12,13 @@ import engine.root.RootIptablesCommand
 import engine.root.RootIptablesConfig
 import engine.root.RootProxyRouteRulePriority
 import engine.root.RootProxyAppWhitelistSystemUids
+import engine.root.RootDnsBypassServerIpv4
+import engine.root.RootDnsBypassServerIpv6
 import engine.root.appendAsteriskdBypassAnchorCleanup
 import engine.root.appendAsteriskdBypassAnchorJump
 import engine.root.appendDeleteRuleLoop
 import engine.root.appendIpRuleDeleteLoop
+import engine.root.appendOutputDnsBypassNatRules
 import engine.root.appendRootEbpfXtbpfInterfaceTproxyRules
 import engine.root.appendRootEbpfXtbpfMarkRules
 import engine.root.appendRootFakeDnsIcmpReplyCleanupRules
@@ -102,6 +105,9 @@ private fun StringBuilder.appendIptablesVariantSetupRules(
         ${variant.command} -t mangle -I OUTPUT 1 -j ${variant.outputChain}
         """,
     )
+    if (enableLocalDns) {
+        appendDnsBypassNatRules(config, variant)
+    }
     if (config.enableEbpfRules) {
         if (enableLocalDns) {
             appendPreroutingDnsTproxyRules(variant, port, config.mark)
@@ -417,6 +423,29 @@ private fun StringBuilder.appendOutputUidMarkRules(
             """,
         )
     }
+}
+
+private fun StringBuilder.appendDnsBypassNatRules(
+    config: RootIptablesConfig,
+    variant: TproxyIptablesVariant,
+) {
+    val realDnsServer = if (variant.tproxyOnIp == "::") RootDnsBypassServerIpv6 else RootDnsBypassServerIpv4
+    appendScript(
+        """
+        ${variant.command} -t nat -N ${variant.dnsOutputChain} 2>/dev/null || true
+        ${variant.command} -t nat -I OUTPUT 1 -p tcp -j ${variant.dnsOutputChain}
+        ${variant.command} -t nat -I OUTPUT 1 -p udp -j ${variant.dnsOutputChain}
+        """,
+    )
+    appendOutputDnsBypassNatRules(
+        command = variant.command,
+        chain = variant.dnsOutputChain,
+        mode = config.proxyAppListMode,
+        forcedBypassUids = config.forcedBypassUids,
+        uids = config.proxyApplicationUids,
+        whitelistSystemUids = RootProxyAppWhitelistSystemUids,
+        realDnsServer = realDnsServer,
+    )
 }
 
 private fun StringBuilder.appendPreroutingDnsTproxyRules(

@@ -66,6 +66,8 @@ const val RootBootScriptPath = "$RootBootScriptDir/asteriskng_start.sh"
 const val DefaultRootHttpProxyPort = NetworkLimits.PORT_MAX - 2
 
 val RootProxyAppWhitelistSystemUids = listOf(0, 1052)
+const val RootDnsBypassServerIpv4 = "1.1.1.1:53"
+const val RootDnsBypassServerIpv6 = "[2606:4700:4700::1111]:53"
 
 val RootDefaultBypassPrivateCidrs = listOf(
     "0.0.0.0/8",

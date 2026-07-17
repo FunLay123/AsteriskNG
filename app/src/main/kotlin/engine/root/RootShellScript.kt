@@ -3,8 +3,58 @@
 
 package engine.root
 
+import app.modes.ProxyAppListModeBlacklist
+import app.modes.ProxyAppListModeWhitelist
 import engine.xray.XrayFakeDnsIpv4Pool
 import utils.shellQuote
+
+/**
+ * DNATs DNS traffic for UIDs that should bypass the proxy entirely, so their queries never
+ * reach the local FakeDNS/TPROXY resolver in the first place. Owner-match reliably identifies
+ * the originating app only in OUTPUT/POSTROUTING (nat OUTPUT here), which is why this must
+ * happen before any mangle-table marking or PREROUTING-based interception.
+ *
+ * Note: on modern Android, apps normally don't open the UDP:53 socket themselves — the system
+ * resolver (netd) does it on their behalf, usually under its own uid. If that's the case here,
+ * this rule (keyed on the app's own uid) won't match those packets either, since the owning uid
+ * of the socket won't be the app's. Verify with `cat /proc/net/udp | grep :0035` while the
+ * excluded app is active before assuming this fixes it.
+ */
+internal fun StringBuilder.appendOutputDnsBypassNatRules(
+    command: String,
+    chain: String,
+    mode: Int,
+    forcedBypassUids: List<Int>,
+    uids: List<Int>,
+    whitelistSystemUids: List<Int>,
+    realDnsServer: String,
+) {
+    fun appendBypassForUid(uid: Int) {
+        appendScript(
+            """
+            $command -t nat -A $chain -m owner --uid-owner $uid -p udp --dport 53 -j DNAT --to-destination ${realDnsServer.shellQuote()}
+            $command -t nat -A $chain -m owner --uid-owner $uid -p tcp --dport 53 -j DNAT --to-destination ${realDnsServer.shellQuote()}
+            """,
+        )
+    }
+    forcedBypassUids.distinct().forEach(::appendBypassForUid)
+    when (mode) {
+        ProxyAppListModeBlacklist -> uids.distinct().forEach(::appendBypassForUid)
+        ProxyAppListModeWhitelist -> {
+            val allowed = (uids.distinct() + whitelistSystemUids).distinct()
+            if (allowed.isNotEmpty()) {
+                val negatedOwners = allowed.joinToString(" ") { uid -> "-m owner ! --uid-owner $uid" }
+                appendScript(
+                    """
+                    $command -t nat -A $chain $negatedOwners -p udp --dport 53 -j DNAT --to-destination ${realDnsServer.shellQuote()}
+                    $command -t nat -A $chain $negatedOwners -p tcp --dport 53 -j DNAT --to-destination ${realDnsServer.shellQuote()}
+                    """,
+                )
+            }
+        }
+        else -> Unit
+    }
+}
 
 internal fun StringBuilder.appendScript(script: String) {
     append(script.trimIndent())
