@@ -425,7 +425,7 @@ private fun StringBuilder.appendPreroutingDnsTproxyRules(
     mark: String,
 ) {
     appendScript(
-        "${variant.command} -t mangle -A ${variant.preroutingChain} -p udp -m udp --dport 53 " +
+        "${variant.command} -t mangle -A ${variant.preroutingChain} -p udp -m udp --dport 53 -m mark --mark $mark " +
             "-j TPROXY --on-port $port --on-ip ${variant.tproxyOnIp} --tproxy-mark $mark",
     )
 }
