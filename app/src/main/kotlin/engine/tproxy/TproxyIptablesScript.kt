@@ -124,8 +124,21 @@ private fun StringBuilder.appendIptablesVariantSetupRules(
         appendPreroutingMarkedTproxyRules(variant, port, config.mark)
         appendEbpfPreroutingRules(config, variant, port)
         appendOutputUidReturnRules(variant.command, variant.outputChain, config.forcedBypassUids)
+        appendOutputApplicationBypassRules(
+            command = variant.command,
+            chain = variant.outputChain,
+            mode = config.proxyAppListMode,
+            uids = config.proxyApplicationUids,
+        )
         if (enableLocalDns) {
-            appendUdpDnsMarkRule(variant.command, variant.outputChain, config.mark, ownerBypassGid = RootXrayGid)
+            appendUdpDnsMarkRule(
+                command = variant.command,
+                chain = variant.outputChain,
+                mark = config.mark,
+                ownerBypassGid = RootXrayGid,
+                mode = config.proxyAppListMode,
+                uids = config.proxyApplicationUids,
+            )
         }
         appendDestinationMarkRules(variant.command, variant.outputChain, variant.proxyPrivateCidrs, config.mark)
         variant.dummyInterface?.let { dummyInterface ->
@@ -187,7 +200,14 @@ private fun StringBuilder.appendIptablesVariantSetupRules(
         uids = config.proxyApplicationUids,
     )
     if (enableLocalDns) {
-        appendUdpDnsMarkRule(variant.command, variant.outputChain, config.mark, ownerBypassGid = RootXrayGid)
+        appendUdpDnsMarkRule(
+            command = variant.command,
+            chain = variant.outputChain,
+            mark = config.mark,
+            ownerBypassGid = RootXrayGid,
+            mode = config.proxyAppListMode,
+            uids = config.proxyApplicationUids,
+        )
     }
     appendDestinationMarkRules(variant.command, variant.outputChain, variant.proxyPrivateCidrs, config.mark)
     appendOutputApplicationBypassRules(
@@ -284,9 +304,19 @@ private fun StringBuilder.appendUdpDnsMarkRule(
     chain: String,
     mark: String,
     ownerBypassGid: Int? = null,
+    mode: Int = ProxyAppListModeGlobal,
+    uids: List<Int> = emptyList(),
 ) {
     val ownerMatch = ownerBypassGid?.let { gid -> "-m owner ! --gid-owner $gid " }.orEmpty()
-    appendScript("$command -t mangle -A $chain -p udp ${ownerMatch}-m udp --dport 53 -j MARK --set-xmark $mark")
+    if (mode == ProxyAppListModeWhitelist) {
+        (uids.distinct() + RootProxyAppWhitelistSystemUids).distinct().forEach { uid ->
+            appendScript(
+                "$command -t mangle -A $chain -p udp -m owner --uid-owner $uid ${ownerMatch}-m udp --dport 53 -j MARK --set-xmark $mark",
+            )
+        }
+    } else {
+        appendScript("$command -t mangle -A $chain -p udp ${ownerMatch}-m udp --dport 53 -j MARK --set-xmark $mark")
+    }
 }
 
 private fun StringBuilder.appendDestinationMarkRules(

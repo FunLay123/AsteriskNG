@@ -111,12 +111,20 @@ private fun StringBuilder.appendIptablesVariantSetupRules(
             interfacePrefixes = config.externalInterfacePrefixes,
         )
         appendOutputUidReturnRules(variant.command, variant.outputChain, config.forcedBypassUids)
+        appendOutputApplicationBypassRules(
+            command = variant.command,
+            chain = variant.outputChain,
+            mode = config.proxyAppListMode,
+            uids = config.proxyApplicationUids,
+        )
         if (enableLocalDns) {
             appendUdpDnsMarkRule(
                 command = variant.command,
                 chain = variant.outputChain,
                 mark = config.mark,
                 ownerBypassGid = RootXrayGid,
+                mode = config.proxyAppListMode,
+                uids = config.proxyApplicationUids,
             )
         }
         appendDestinationMarkRules(
@@ -226,6 +234,8 @@ private fun StringBuilder.appendOutputTrafficMarkRules(
             chain = variant.outputChain,
             mark = config.mark,
             ownerBypassGid = RootXrayGid,
+            mode = config.proxyAppListMode,
+            uids = config.proxyApplicationUids,
         )
     }
     appendDestinationMarkRules(
@@ -271,9 +281,19 @@ private fun StringBuilder.appendUdpDnsMarkRule(
     chain: String,
     mark: String,
     ownerBypassGid: Int? = null,
+    mode: Int = ProxyAppListModeGlobal,
+    uids: List<Int> = emptyList(),
 ) {
     val ownerMatch = ownerBypassGid?.let { gid -> "-m owner ! --gid-owner $gid " }.orEmpty()
-    appendScript("$command -t mangle -A $chain -p udp ${ownerMatch}-m udp --dport 53 -j MARK --set-xmark $mark")
+    if (mode == ProxyAppListModeWhitelist) {
+        (uids.distinct() + RootProxyAppWhitelistSystemUids).distinct().forEach { uid ->
+            appendScript(
+                "$command -t mangle -A $chain -p udp -m owner --uid-owner $uid ${ownerMatch}-m udp --dport 53 -j MARK --set-xmark $mark",
+            )
+        }
+    } else {
+        appendScript("$command -t mangle -A $chain -p udp ${ownerMatch}-m udp --dport 53 -j MARK --set-xmark $mark")
+    }
 }
 
 private fun StringBuilder.appendDestinationMarkRules(
