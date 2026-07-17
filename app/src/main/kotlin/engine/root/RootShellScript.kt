@@ -124,9 +124,9 @@ internal fun StringBuilder.appendAsteriskdBypassAnchorCleanup(
     ipv6: Boolean,
 ) {
     val chains = if (ipv6) {
-        listOf(RootAsteriskdBypass6SlotA, RootAsteriskdBypass6SlotB, RootAsteriskdBypass6Anchor)
+        listOf(RootAsteriskdBypass6Anchor, RootAsteriskdBypass6SlotA, RootAsteriskdBypass6SlotB)
     } else {
-        listOf(RootAsteriskdBypass4SlotA, RootAsteriskdBypass4SlotB, RootAsteriskdBypass4Anchor)
+        listOf(RootAsteriskdBypass4Anchor, RootAsteriskdBypass4SlotA, RootAsteriskdBypass4SlotB)
     }
     chains.forEach { chain ->
         appendScript(
