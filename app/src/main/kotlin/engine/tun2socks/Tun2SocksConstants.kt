@@ -7,6 +7,7 @@ import engine.root.RootProxyFwmark
 
 const val Tun2SocksListenAddress = "127.0.0.1"
 const val DefaultTun2SocksProxyPort = 65534
+const val RootTun2SocksBypassPort = 65530
 const val Tun2SocksFwmark = RootProxyFwmark
 const val Tun2SocksRouteTable = "168"
 const val Tun2SocksPreroutingChain = "ASTERISK_TUN_PREROUTING"

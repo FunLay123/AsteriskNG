@@ -8,6 +8,7 @@ import engine.root.RootProxyAuxFwmark
 import engine.root.RootProxyFwmark
 
 const val DefaultTproxyPort = NetworkLimits.PORT_MAX
+const val RootTproxyBypassPort = NetworkLimits.PORT_MAX - 4
 const val TproxyFwmark = RootProxyFwmark
 const val TproxyRouteTable = "160"
 const val TproxyDummyDevice = "xdummy"
