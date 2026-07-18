@@ -1004,12 +1004,14 @@ static void emit_ipv4_mapped_ipv4_policy_and_token_from_regs(
     int bypass_private_cidr4_map_fd,
     int local_interface_cidr4_map_fd,
     int direct_cidr4_map_fd,
+    int fakedns_pool_cidr4_map_fd,
     int ignored_ifindex_map_fd,
     int ignored_route_cidr4_map_fd,
     int token_map_fd,
     uint8_t protocol,
     bool protocol_from_context,
     uint16_t bridge_port,
+    uint16_t bypass_bridge_port,
     size_t *bypass_jumps,
     size_t *bypass_jump_count,
     size_t *drop_jumps,
@@ -1018,10 +1020,19 @@ static void emit_ipv4_mapped_ipv4_policy_and_token_from_regs(
     size_t *allow_jump_count) {
     size_t force_proxy_jumps[16];
     size_t force_proxy_jump_count = 0;
+    /* Jumps for "this uid is excluded/bypassed" (emit_uid_policy) are kept separate
+     * from the generic bypass_jumps (self-gid bypass, loopback/private/local/direct
+     * CIDR bypass). Those generic reasons still exit allow unconditionally. A uid
+     * that is merely excluded must instead be checked against the FakeDNS pool
+     * below, since its destination may be a synthetic (non-routable) address that
+     * needs to be redirected to the bypass bridge instead of dialed directly. Same
+     * reasoning as build_ipv4_sock_addr_prog's uid_bypass_jumps. */
+    size_t uid_bypass_jumps[BPF2SOCKS_MAX_INLINE_BYPASS_UIDS + 4U];
+    size_t uid_bypass_jump_count = 0;
 
     emit(builder, BPF_STX_MEM(BPF_W, BPF_REG_10, BPF_REG_7, STACK_SAVED_V4_ADDR));
     emit(builder, BPF_STX_MEM(BPF_W, BPF_REG_10, BPF_REG_8, STACK_SAVED_V4_PORT));
-    emit_uid_policy(builder, policy, uid_map_fd, bypass_jumps, bypass_jump_count, drop_jumps, drop_jump_count);
+    emit_uid_policy(builder, policy, uid_map_fd, uid_bypass_jumps, &uid_bypass_jump_count, drop_jumps, drop_jump_count);
     emit(builder, BPF_LDX_MEM(BPF_W, BPF_REG_7, BPF_REG_10, STACK_SAVED_V4_ADDR));
     emit(builder, BPF_LDX_MEM(BPF_W, BPF_REG_8, BPF_REG_10, STACK_SAVED_V4_PORT));
     emit_ipv4_policy_checks_from_regs(
@@ -1052,6 +1063,60 @@ static void emit_ipv4_mapped_ipv4_policy_and_token_from_regs(
         bridge_port,
         drop_jumps,
         drop_jump_count);
+
+    /* The normal (non-uid-bypassed) path above already rewrote the destination to
+     * bridge_port; it must not fall through into the uid-bypass block below, which
+     * belongs only to connections whose uid was excluded via emit_uid_policy. Skip
+     * straight to this function's terminal exit: an entry in allow_jumps, which the
+     * caller (build_ipv4_mapped_ipv6_sock_addr_prog, via emit_ipv4_mapped_ipv6_branch)
+     * resolves to its own allow_label -- this function has no exit label of its own,
+     * unlike build_ipv4_sock_addr_prog. This jump (and the uid-bypass block it skips)
+     * is only emitted when there is at least one uid_bypass_jumps entry to land on it
+     * -- otherwise the block would be unreachable and the verifier would reject the
+     * program. */
+    if (uid_bypass_jump_count > 0U) {
+        size_t normal_path_done = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JA, 0, 0, 0));
+
+        size_t uid_bypass_label = builder->count;
+        for (size_t i = 0; i < uid_bypass_jump_count; ++i) {
+            patch_jump(builder, uid_bypass_jumps[i], uid_bypass_label);
+        }
+        /* REG_7/REG_8 were repurposed inside emit_uid_policy (uid value, map lookup
+         * results); restore the real destination address/port saved before it ran. */
+        emit(builder, BPF_LDX_MEM(BPF_W, BPF_REG_7, BPF_REG_10, STACK_SAVED_V4_ADDR));
+        emit(builder, BPF_LDX_MEM(BPF_W, BPF_REG_8, BPF_REG_10, STACK_SAVED_V4_PORT));
+
+        if (fakedns_pool_cidr4_map_fd >= 0) {
+            emit(builder, BPF_ST_MEM(BPF_W, BPF_REG_10, STACK_LPM4_KEY, 32));
+            emit(builder, BPF_STX_MEM(BPF_W, BPF_REG_10, BPF_REG_7, STACK_LPM4_KEY + (int)offsetof(struct bpf2socks_lpm4_key, addr)));
+            emit_ld_map_fd(builder, BPF_REG_1, fakedns_pool_cidr4_map_fd);
+            emit(builder, BPF_MOV64_REG(BPF_REG_2, BPF_REG_10));
+            emit(builder, BPF_ALU64_IMM_OP(BPF_ADD, BPF_REG_2, STACK_LPM4_KEY));
+            emit(builder, BPF_CALL_FUNC(BPF_FUNC_map_lookup_elem));
+            size_t not_fakedns_pool = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JEQ, BPF_REG_0, 0, 0));
+            /* Match: destination is a synthetic FakeDNS address. Redirect to the
+             * bypass bridge (reaches Xray's bypass-direct inbound) instead of
+             * letting the excluded uid dial the non-routable fake address. Use the
+             * v4-mapped-v6 rewrite helper (not emit_token_update_and_rewrite): this
+             * program's sockaddr is IPv6-shaped even though the destination is a
+             * v4-mapped v4 address. */
+            emit_ipv4_mapped_token_update_and_rewrite(
+                builder,
+                config,
+                token_map_fd,
+                protocol,
+                protocol_from_context,
+                bypass_bridge_port,
+                drop_jumps,
+                drop_jump_count);
+            patch_jump(builder, not_fakedns_pool, builder->count);
+        }
+        /* No match (or no fakedns pool map configured): plain bypass, unmodified,
+         * exactly as before this change. */
+        allow_jumps[(*allow_jump_count)++] = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JA, 0, 0, 0));
+
+        patch_jump(builder, normal_path_done, builder->count);
+    }
     allow_jumps[(*allow_jump_count)++] = emit_jump(builder, BPF_JMP_IMM_OP(BPF_JA, 0, 0, 0));
 }
 
@@ -1064,6 +1129,7 @@ static bool emit_ipv4_mapped_ipv6_branch(
     int bypass_private_cidr4_map_fd,
     int local_interface_cidr4_map_fd,
     int direct_cidr4_map_fd,
+    int fakedns_pool_cidr4_map_fd,
     int ignored_ifindex_map_fd,
     int ignored_route_cidr4_map_fd,
     int token_map_fd,
@@ -1071,6 +1137,7 @@ static bool emit_ipv4_mapped_ipv6_branch(
     uint8_t protocol,
     bool protocol_from_context,
     uint16_t bridge_port,
+    uint16_t bypass_bridge_port,
     enum bpf_attach_type attach_type,
     size_t *bypass_jumps,
     size_t *bypass_jump_count,
@@ -1133,12 +1200,14 @@ static bool emit_ipv4_mapped_ipv6_branch(
         bypass_private_cidr4_map_fd,
         local_interface_cidr4_map_fd,
         direct_cidr4_map_fd,
+        fakedns_pool_cidr4_map_fd,
         ignored_ifindex_map_fd,
         ignored_route_cidr4_map_fd,
         token_map_fd,
         protocol,
         protocol_from_context,
         bridge_port,
+        bypass_bridge_port,
         bypass_jumps,
         bypass_jump_count,
         drop_jumps,
@@ -1324,6 +1393,7 @@ static int build_ipv6_sock_addr_prog(
     int bypass_private_cidr4_map_fd,
     int local_interface_cidr4_map_fd,
     int direct_cidr4_map_fd,
+    int fakedns_pool_cidr4_map_fd,
     int proxy_cidr6_map_fd,
     int bypass_private_cidr6_map_fd,
     int local_interface_cidr6_map_fd,
@@ -1336,6 +1406,7 @@ static int build_ipv6_sock_addr_prog(
     uint8_t protocol,
     bool protocol_from_context,
     uint16_t bridge_port,
+    uint16_t bypass_bridge_port,
     enum bpf_attach_type attach_type,
     const char *name,
     bool log_error) {
@@ -1365,6 +1436,7 @@ static int build_ipv6_sock_addr_prog(
         bypass_private_cidr4_map_fd,
         local_interface_cidr4_map_fd,
         direct_cidr4_map_fd,
+        fakedns_pool_cidr4_map_fd,
         ignored_ifindex_map_fd,
         ignored_route_cidr4_map_fd,
         token_map_fd,
@@ -1372,6 +1444,7 @@ static int build_ipv6_sock_addr_prog(
         protocol,
         protocol_from_context,
         bridge_port,
+        bypass_bridge_port,
         attach_type,
         bypass_jumps,
         &bypass_jump_count,
@@ -1494,6 +1567,7 @@ static int build_ipv4_mapped_ipv6_sock_addr_prog(
     int bypass_private_cidr4_map_fd,
     int local_interface_cidr4_map_fd,
     int direct_cidr4_map_fd,
+    int fakedns_pool_cidr4_map_fd,
     int ignored_ifindex_map_fd,
     int ignored_route_cidr4_map_fd,
     int token_map_fd,
@@ -1501,6 +1575,7 @@ static int build_ipv4_mapped_ipv6_sock_addr_prog(
     uint8_t protocol,
     bool protocol_from_context,
     uint16_t bridge_port,
+    uint16_t bypass_bridge_port,
     enum bpf_attach_type attach_type,
     const char *name,
     bool log_error) {
@@ -1528,6 +1603,7 @@ static int build_ipv4_mapped_ipv6_sock_addr_prog(
         bypass_private_cidr4_map_fd,
         local_interface_cidr4_map_fd,
         direct_cidr4_map_fd,
+        fakedns_pool_cidr4_map_fd,
         ignored_ifindex_map_fd,
         ignored_route_cidr4_map_fd,
         token_map_fd,
@@ -1535,6 +1611,7 @@ static int build_ipv4_mapped_ipv6_sock_addr_prog(
         protocol,
         protocol_from_context,
         bridge_port,
+        bypass_bridge_port,
         attach_type,
         bypass_jumps,
         &bypass_jump_count,
@@ -1928,6 +2005,7 @@ int bpf2socks_bpf_probe(
             bypass_private_cidr4_fd,
             local_interface_cidr4_fd,
             direct_cidr4_fd,
+            fakedns_pool_cidr4_fd,
             proxy_cidr6_fd,
             bypass_private_cidr6_fd,
             local_interface_cidr6_fd,
@@ -1940,6 +2018,7 @@ int bpf2socks_bpf_probe(
             BPF2SOCKS_PROTO_TCP,
             true,
             bridge_port,
+            bypass_bridge_port,
             BPF_CGROUP_INET6_CONNECT,
             "b2s_conn6",
             false);
@@ -1951,6 +2030,7 @@ int bpf2socks_bpf_probe(
             bypass_private_cidr4_fd,
             local_interface_cidr4_fd,
             direct_cidr4_fd,
+            fakedns_pool_cidr4_fd,
             proxy_cidr6_fd,
             bypass_private_cidr6_fd,
             local_interface_cidr6_fd,
@@ -1963,6 +2043,7 @@ int bpf2socks_bpf_probe(
             BPF2SOCKS_PROTO_UDP,
             false,
             bridge_port,
+            bypass_bridge_port,
             BPF_CGROUP_UDP6_SENDMSG,
             "b2s_udp6",
             false);
@@ -1980,6 +2061,7 @@ int bpf2socks_bpf_probe(
             bypass_private_cidr4_fd,
             local_interface_cidr4_fd,
             direct_cidr4_fd,
+            fakedns_pool_cidr4_fd,
             ignored_ifindex_fd,
             ignored_route_cidr4_fd,
             token_fd,
@@ -1987,6 +2069,7 @@ int bpf2socks_bpf_probe(
             BPF2SOCKS_PROTO_TCP,
             true,
             bridge_port,
+            bypass_bridge_port,
             BPF_CGROUP_INET6_CONNECT,
             "b2s_c6v4m",
             false);
@@ -2002,6 +2085,7 @@ int bpf2socks_bpf_probe(
             bypass_private_cidr4_fd,
             local_interface_cidr4_fd,
             direct_cidr4_fd,
+            fakedns_pool_cidr4_fd,
             ignored_ifindex_fd,
             ignored_route_cidr4_fd,
             token_fd,
@@ -2009,6 +2093,7 @@ int bpf2socks_bpf_probe(
             BPF2SOCKS_PROTO_UDP,
             false,
             bridge_port,
+            bypass_bridge_port,
             BPF_CGROUP_UDP6_SENDMSG,
             "b2s_u6v4m",
             false);
@@ -2332,6 +2417,7 @@ int bpf2socks_bpf_start(
             runtime->bypass_private_cidr4_map_fd,
             runtime->local_interface_cidr4_map_fd,
             runtime->direct_cidr4_map_fd,
+            runtime->fakedns_pool_cidr4_map_fd,
             runtime->proxy_cidr6_map_fd,
             runtime->bypass_private_cidr6_map_fd,
             runtime->local_interface_cidr6_map_fd,
@@ -2344,6 +2430,7 @@ int bpf2socks_bpf_start(
             BPF2SOCKS_PROTO_TCP,
             true,
             config->listen_port,
+            config->bypass_bridge_port,
             BPF_CGROUP_INET6_CONNECT,
             "b2s_conn6",
             true);
@@ -2355,6 +2442,7 @@ int bpf2socks_bpf_start(
             runtime->bypass_private_cidr4_map_fd,
             runtime->local_interface_cidr4_map_fd,
             runtime->direct_cidr4_map_fd,
+            runtime->fakedns_pool_cidr4_map_fd,
             runtime->proxy_cidr6_map_fd,
             runtime->bypass_private_cidr6_map_fd,
             runtime->local_interface_cidr6_map_fd,
@@ -2367,6 +2455,7 @@ int bpf2socks_bpf_start(
             BPF2SOCKS_PROTO_UDP,
             false,
             config->listen_port,
+            config->bypass_bridge_port,
             BPF_CGROUP_UDP6_SENDMSG,
             "b2s_udp6",
             true);
@@ -2390,6 +2479,7 @@ int bpf2socks_bpf_start(
             runtime->bypass_private_cidr4_map_fd,
             runtime->local_interface_cidr4_map_fd,
             runtime->direct_cidr4_map_fd,
+            runtime->fakedns_pool_cidr4_map_fd,
             runtime->ignored_ifindex_map_fd,
             runtime->ignored_route_cidr4_map_fd,
             runtime->token_map_fd,
@@ -2397,6 +2487,7 @@ int bpf2socks_bpf_start(
             BPF2SOCKS_PROTO_TCP,
             true,
             config->listen_port,
+            config->bypass_bridge_port,
             BPF_CGROUP_INET6_CONNECT,
             "b2s_c6v4m",
             true);
@@ -2412,6 +2503,7 @@ int bpf2socks_bpf_start(
             runtime->bypass_private_cidr4_map_fd,
             runtime->local_interface_cidr4_map_fd,
             runtime->direct_cidr4_map_fd,
+            runtime->fakedns_pool_cidr4_map_fd,
             runtime->ignored_ifindex_map_fd,
             runtime->ignored_route_cidr4_map_fd,
             runtime->token_map_fd,
@@ -2419,6 +2511,7 @@ int bpf2socks_bpf_start(
             BPF2SOCKS_PROTO_UDP,
             false,
             config->listen_port,
+            config->bypass_bridge_port,
             BPF_CGROUP_UDP6_SENDMSG,
             "b2s_u6v4m",
             true);
