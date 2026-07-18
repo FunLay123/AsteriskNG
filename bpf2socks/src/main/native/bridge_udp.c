@@ -1810,13 +1810,17 @@ static struct bpf2socks_udp_client_session *get_session(
 
 static int lookup_udp_original(
     const struct bpf2socks_runtime_config *config,
+    uint16_t local_bridge_port,
     struct udp_client_packet *packet) {
     struct bpf2socks_token_key key;
     struct bpf2socks_original_dst original;
     memset(&key, 0, sizeof(key));
     key.family = (uint8_t)packet->token_family;
     key.protocol = BPF2SOCKS_PROTO_UDP;
-    key.token_port = config->listen_port;
+    /* Must match whichever local port this packet actually arrived on (the primary
+     * bridge or the bypass bridge) -- the eBPF connect/sendmsg hooks store the token
+     * map entry keyed by the rewritten destination port, not always config->listen_port. */
+    key.token_port = local_bridge_port;
     memcpy(key.token_addr, packet->token_addr, packet->token_family == AF_INET6 ? 16U : 4U);
     if (packet->client_addr.ss_family == AF_INET) {
         const struct sockaddr_in *client = (const struct sockaddr_in *)&packet->client_addr;
@@ -2680,7 +2684,7 @@ static void handle_udp_client_packets(
         ++worker->stats.udp_packets_from_client;
 
         if (parse_udp_client_packet_cmsgs(&vec[i].msg_hdr, worker->config, &packet) < 0 ||
-            lookup_udp_original(worker->config, &packet) < 0) {
+            lookup_udp_original(worker->config, worker->local_bridge_port, &packet) < 0) {
             ++worker->stats.udp_token_misses;
             fprintf(stderr, "missing UDP original destination: errno=%d\n", errno);
             continue;

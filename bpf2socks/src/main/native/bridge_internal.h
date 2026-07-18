@@ -39,6 +39,12 @@ struct bpf2socks_bridge_worker {
     int udp_listener_fd;
     int udp_listener6_fd;
     int epoll_fd;
+    /* Local port the tcp/udp listener socket(s) above are bound to (config->listen_port
+     * for the primary worker pool, config->bypass_bridge_port for the bypass-direct
+     * worker). UDP has no per-packet way to learn the local port it arrived on (unlike
+     * TCP's getsockname on the accepted fd), so the token-map lookup key must be built
+     * from this instead of assuming config->listen_port unconditionally. */
+    uint16_t local_bridge_port;
     struct sockaddr_storage socks_addr;
     socklen_t socks_addr_len;
     const struct bpf2socks_runtime_config *config;

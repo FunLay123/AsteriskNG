@@ -95,7 +95,7 @@ void bpf2socks_bridge_tune_socket_buffers(int fd, uint32_t recv_size, uint32_t s
     bpf2socks_bridge_record_socket_buffers(fd);
 }
 
-static int bind_tcp_listener(const struct bpf2socks_runtime_config *config) {
+static int bind_tcp_listener(const struct bpf2socks_runtime_config *config, uint16_t port) {
     int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (fd < 0) return -1;
     int one = 1;
@@ -117,7 +117,7 @@ static int bind_tcp_listener(const struct bpf2socks_runtime_config *config) {
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(config->listen_port);
+    addr.sin_port = htons(port);
     if (inet_pton(AF_INET, config->listen_host, &addr.sin_addr) != 1) {
         close(fd);
         errno = EINVAL;
@@ -133,7 +133,7 @@ static int bind_tcp_listener(const struct bpf2socks_runtime_config *config) {
     return fd;
 }
 
-static int bind_tcp6_listener(const struct bpf2socks_runtime_config *config) {
+static int bind_tcp6_listener(const struct bpf2socks_runtime_config *config, uint16_t port) {
     int fd = socket(AF_INET6, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (fd < 0) return -1;
     int one = 1;
@@ -156,7 +156,7 @@ static int bind_tcp6_listener(const struct bpf2socks_runtime_config *config) {
     struct sockaddr_in6 addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin6_family = AF_INET6;
-    addr.sin6_port = htons(config->listen_port);
+    addr.sin6_port = htons(port);
     addr.sin6_addr = in6addr_any;
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
         listen(fd, 4096) != 0) {
@@ -168,7 +168,7 @@ static int bind_tcp6_listener(const struct bpf2socks_runtime_config *config) {
     return fd;
 }
 
-static int bind_udp_listener(const struct bpf2socks_runtime_config *config) {
+static int bind_udp_listener(const struct bpf2socks_runtime_config *config, uint16_t port) {
     int fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (fd < 0) return -1;
     int one = 1;
@@ -197,7 +197,7 @@ static int bind_udp_listener(const struct bpf2socks_runtime_config *config) {
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(config->listen_port);
+    addr.sin_port = htons(port);
     if (inet_pton(AF_INET, config->listen_host, &addr.sin_addr) != 1) {
         close(fd);
         errno = EINVAL;
@@ -212,7 +212,7 @@ static int bind_udp_listener(const struct bpf2socks_runtime_config *config) {
     return fd;
 }
 
-static int bind_udp6_listener(const struct bpf2socks_runtime_config *config) {
+static int bind_udp6_listener(const struct bpf2socks_runtime_config *config, uint16_t port) {
     int fd = socket(AF_INET6, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (fd < 0) return -1;
     int one = 1;
@@ -242,7 +242,7 @@ static int bind_udp6_listener(const struct bpf2socks_runtime_config *config) {
     struct sockaddr_in6 addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin6_family = AF_INET6;
-    addr.sin6_port = htons(config->listen_port);
+    addr.sin6_port = htons(port);
     addr.sin6_addr = in6addr_any;
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
         int saved = errno;
@@ -522,6 +522,99 @@ static int start_stats_thread(
     return 0;
 }
 
+/* Parameters that differ between the primary worker pool (targeting Xray's main SOCKS
+ * inbound on config->socks_port, reachable via config->listen_port) and the bypass-direct
+ * worker (targeting Xray's bypass-direct SOCKS inbound on config->bypass_socks_port,
+ * reachable via config->bypass_bridge_port). Everything else -- accept/relay/session
+ * logic in bridge_tcp.c and bridge_udp.c -- is shared and driven purely off the
+ * per-worker struct fields populated here. */
+struct bridge_worker_setup {
+    uint32_t id;
+    uint16_t bridge_port;
+    struct sockaddr_storage socks_addr;
+    socklen_t socks_addr_len;
+    struct bpf2socks_tcp_session_budget *tcp_session_budget;
+    struct bpf2socks_udp_pending_budget *udp_pending_budget;
+    uint32_t udp_session_cap;
+    uint32_t udp_binding_cap;
+    bool register_sk_lookup;
+    const char *role;
+};
+
+static int setup_bridge_worker(
+    struct bpf2socks_bridge_worker *worker,
+    const struct bpf2socks_runtime_config *config,
+    const struct bridge_worker_setup *setup) {
+    worker->id = setup->id;
+    worker->tcp_listener_fd = -1;
+    worker->tcp_listener6_fd = -1;
+    worker->udp_listener_fd = -1;
+    worker->udp_listener6_fd = -1;
+    worker->epoll_fd = -1;
+    worker->local_bridge_port = setup->bridge_port;
+    worker->socks_addr = setup->socks_addr;
+    worker->socks_addr_len = setup->socks_addr_len;
+    worker->config = config;
+    worker->tcp_session_budget = setup->tcp_session_budget;
+    worker->udp_session_cap = setup->udp_session_cap;
+    worker->udp_binding_cap = setup->udp_binding_cap;
+    worker->udp_pending_budget = setup->udp_pending_budget;
+
+    int mutex_result = pthread_mutex_init(&worker->stats_snapshot_mutex, NULL);
+    if (mutex_result != 0) {
+        errno = mutex_result;
+        return -1;
+    }
+    worker->stats_snapshot_mutex_initialized = true;
+
+    worker->udp_listener_fd = bind_udp_listener(config, setup->bridge_port);
+    if (worker->udp_listener_fd < 0) {
+        fprintf(stderr, "failed to bind bpf2socks %s UDP listener for worker %u: errno=%d\n",
+            setup->role, setup->id, errno);
+        return -1;
+    }
+
+    if (config->enable_ipv6) {
+        worker->udp_listener6_fd = bind_udp6_listener(config, setup->bridge_port);
+        if (worker->udp_listener6_fd < 0) {
+            fprintf(stderr, "failed to bind bpf2socks %s UDP6 listener for worker %u: errno=%d\n",
+                setup->role, setup->id, errno);
+            return -1;
+        }
+    }
+
+    worker->tcp_listener_fd = bind_tcp_listener(config, setup->bridge_port);
+    if (worker->tcp_listener_fd < 0) {
+        fprintf(stderr, "failed to bind bpf2socks %s TCP listener for worker %u: errno=%d\n",
+            setup->role, setup->id, errno);
+        return -1;
+    }
+
+    if (config->enable_ipv6) {
+        worker->tcp_listener6_fd = bind_tcp6_listener(config, setup->bridge_port);
+        if (worker->tcp_listener6_fd < 0) {
+            fprintf(stderr, "failed to bind bpf2socks %s TCP6 listener for worker %u: errno=%d\n",
+                setup->role, setup->id, errno);
+            return -1;
+        }
+    }
+
+    if (setup->register_sk_lookup &&
+        bpf2socks_sk_lookup_register_worker_sockets(
+            config->sk_lookup_sock_map_fd,
+            worker->id,
+            worker->tcp_listener_fd,
+            worker->udp_listener_fd,
+            worker->tcp_listener6_fd,
+            worker->udp_listener6_fd) < 0) {
+        fprintf(stderr, "failed to register bpf2socks sockets for sk_lookup worker %u: errno=%d\n",
+            setup->id, errno);
+        return -1;
+    }
+
+    return 0;
+}
+
 int bpf2socks_bridge_run(const struct bpf2socks_runtime_config *config, const char *pid_path) {
     if (config == NULL) return -1;
     uint32_t worker_count = normalized_worker_count(config);
@@ -535,8 +628,40 @@ int bpf2socks_bridge_run(const struct bpf2socks_runtime_config *config, const ch
     if (bpf2socks_resolve_tcp_addr(config->socks_host, config->socks_port, &socks_addr, &socks_addr_len) < 0) {
         return -1;
     }
-    struct bpf2socks_bridge_worker *workers = calloc(worker_count, sizeof(*workers));
-    struct bridge_worker_threads *threads = calloc(worker_count, sizeof(*threads));
+
+    /* The bypass-direct worker is a single extra listener (TCP+UDP, v4+v6) that relays
+     * to Xray's bypass-direct SOCKS inbound instead of the main one, for excluded uids'
+     * FakeDNS-pool-destined connections that the eBPF connect/sendmsg hooks redirect to
+     * config->bypass_bridge_port (see connect_prog.c). It is only started once both
+     * bypass_bridge_port and bypass_socks_port are configured (Kotlin-side JSON wiring
+     * for these is a separate task); until then it stays disabled and behavior is
+     * unchanged from before this feature existed. It gets its own dedicated session/
+     * pending budgets rather than sharing the primary pool's, so a burst of excluded-app
+     * traffic cannot starve (or be starved by) normal proxied traffic. It is deliberately
+     * NOT registered with sk_lookup: that mechanism is unrelated to this loopback
+     * connect-rewrite redirect path (only the primary pool uses it today). */
+    bool bypass_enabled = config->bypass_bridge_port != 0U && config->bypass_socks_port != 0U;
+    struct sockaddr_storage bypass_socks_addr;
+    socklen_t bypass_socks_addr_len = 0;
+    struct bpf2socks_udp_pending_budget bypass_udp_pending_budget;
+    struct bpf2socks_tcp_session_budget bypass_tcp_session_budget;
+    if (bypass_enabled) {
+        if (bpf2socks_resolve_tcp_addr(
+                config->socks_host,
+                config->bypass_socks_port,
+                &bypass_socks_addr,
+                &bypass_socks_addr_len) < 0) {
+            return -1;
+        }
+        bpf2socks_pending_budget_init(&bypass_udp_pending_budget, config->max_udp_pending_bytes);
+        bypass_tcp_session_budget.cap = config->max_tcp_sessions;
+        atomic_init(&bypass_tcp_session_budget.used, 0U);
+    }
+    uint32_t total_worker_count = worker_count + (bypass_enabled ? 1U : 0U);
+    uint32_t bypass_worker_index = worker_count;
+
+    struct bpf2socks_bridge_worker *workers = calloc(total_worker_count, sizeof(*workers));
+    struct bridge_worker_threads *threads = calloc(total_worker_count, sizeof(*threads));
     if (workers == NULL || threads == NULL) {
         free(workers);
         free(threads);
@@ -547,77 +672,48 @@ int bpf2socks_bridge_run(const struct bpf2socks_runtime_config *config, const ch
     pthread_t stats_thread;
     bool stats_started = false;
     for (uint32_t i = 0; i < worker_count; ++i) {
-        workers[i].id = i;
-        workers[i].tcp_listener_fd = -1;
-        workers[i].tcp_listener6_fd = -1;
-        workers[i].udp_listener_fd = -1;
-        workers[i].udp_listener6_fd = -1;
-        workers[i].epoll_fd = -1;
-        workers[i].socks_addr = socks_addr;
-        workers[i].socks_addr_len = socks_addr_len;
-        workers[i].config = config;
-        workers[i].tcp_session_budget = &tcp_session_budget;
-        workers[i].udp_session_cap = bpf2socks_worker_quota(config->max_udp_sessions, i, worker_count);
-        workers[i].udp_binding_cap = bpf2socks_worker_quota(config->max_udp_bindings, i, worker_count);
-        workers[i].udp_pending_budget = &udp_pending_budget;
-        int mutex_result = pthread_mutex_init(&workers[i].stats_snapshot_mutex, NULL);
-        if (mutex_result != 0) {
-            errno = mutex_result;
-            bpf2socks_stop_requested = 1;
-            goto done;
-        }
-        workers[i].stats_snapshot_mutex_initialized = true;
-
-        workers[i].udp_listener_fd = bind_udp_listener(config);
-        if (workers[i].udp_listener_fd < 0) {
-            fprintf(stderr, "failed to bind bpf2socks UDP listener for worker %u: errno=%d\n", i, errno);
-            bpf2socks_stop_requested = 1;
-            goto done;
-        }
-
-        if (config->enable_ipv6) {
-            workers[i].udp_listener6_fd = bind_udp6_listener(config);
-            if (workers[i].udp_listener6_fd < 0) {
-                fprintf(stderr, "failed to bind bpf2socks UDP6 listener for worker %u: errno=%d\n", i, errno);
-                bpf2socks_stop_requested = 1;
-                goto done;
-            }
-        }
-
-        workers[i].tcp_listener_fd = bind_tcp_listener(config);
-        if (workers[i].tcp_listener_fd < 0) {
-            fprintf(stderr, "failed to bind bpf2socks TCP listener for worker %u: errno=%d\n", i, errno);
-            bpf2socks_stop_requested = 1;
-            goto done;
-        }
-
-        if (config->enable_ipv6) {
-            workers[i].tcp_listener6_fd = bind_tcp6_listener(config);
-            if (workers[i].tcp_listener6_fd < 0) {
-                fprintf(stderr, "failed to bind bpf2socks TCP6 listener for worker %u: errno=%d\n", i, errno);
-                bpf2socks_stop_requested = 1;
-                goto done;
-            }
-        }
-
-        if (bpf2socks_sk_lookup_register_worker_sockets(
-                config->sk_lookup_sock_map_fd,
-                workers[i].id,
-                workers[i].tcp_listener_fd,
-                workers[i].udp_listener_fd,
-                workers[i].tcp_listener6_fd,
-                workers[i].udp_listener6_fd) < 0) {
-            fprintf(stderr, "failed to register bpf2socks sockets for sk_lookup worker %u: errno=%d\n", i, errno);
+        struct bridge_worker_setup setup = {
+            .id = i,
+            .bridge_port = config->listen_port,
+            .socks_addr = socks_addr,
+            .socks_addr_len = socks_addr_len,
+            .tcp_session_budget = &tcp_session_budget,
+            .udp_pending_budget = &udp_pending_budget,
+            .udp_session_cap = bpf2socks_worker_quota(config->max_udp_sessions, i, worker_count),
+            .udp_binding_cap = bpf2socks_worker_quota(config->max_udp_bindings, i, worker_count),
+            .register_sk_lookup = true,
+            .role = "primary",
+        };
+        if (setup_bridge_worker(&workers[i], config, &setup) < 0) {
             bpf2socks_stop_requested = 1;
             goto done;
         }
     }
 
-    if (config->debug_stats && start_stats_thread(pid_path, workers, worker_count, &stats_thread) == 0) {
+    if (bypass_enabled) {
+        struct bridge_worker_setup setup = {
+            .id = bypass_worker_index,
+            .bridge_port = config->bypass_bridge_port,
+            .socks_addr = bypass_socks_addr,
+            .socks_addr_len = bypass_socks_addr_len,
+            .tcp_session_budget = &bypass_tcp_session_budget,
+            .udp_pending_budget = &bypass_udp_pending_budget,
+            .udp_session_cap = config->max_udp_sessions,
+            .udp_binding_cap = config->max_udp_bindings,
+            .register_sk_lookup = false,
+            .role = "bypass",
+        };
+        if (setup_bridge_worker(&workers[bypass_worker_index], config, &setup) < 0) {
+            bpf2socks_stop_requested = 1;
+            goto done;
+        }
+    }
+
+    if (config->debug_stats && start_stats_thread(pid_path, workers, total_worker_count, &stats_thread) == 0) {
         stats_started = true;
     }
 
-    for (uint32_t i = 0; i < worker_count; ++i) {
+    for (uint32_t i = 0; i < total_worker_count; ++i) {
         if (start_worker_thread(&workers[i], false, &threads[i].tcp_thread) == 0) {
             threads[i].tcp_started = true;
         } else {
@@ -637,16 +733,16 @@ int bpf2socks_bridge_run(const struct bpf2socks_runtime_config *config, const ch
     result = 0;
 
 done:
-    for (uint32_t i = 0; i < worker_count; ++i) {
+    for (uint32_t i = 0; i < total_worker_count; ++i) {
         if (threads[i].tcp_started) pthread_join(threads[i].tcp_thread, NULL);
     }
     bpf2socks_stop_requested = 1;
-    for (uint32_t i = 0; i < worker_count; ++i) {
+    for (uint32_t i = 0; i < total_worker_count; ++i) {
         if (threads[i].udp_started) pthread_join(threads[i].udp_thread, NULL);
     }
     if (stats_started) pthread_join(stats_thread, NULL);
-    close_workers(workers, worker_count);
-    destroy_worker_stats_snapshot_mutexes(workers, worker_count);
+    close_workers(workers, total_worker_count);
+    destroy_worker_stats_snapshot_mutexes(workers, total_worker_count);
     free(threads);
     free(workers);
     return result;
