@@ -11,6 +11,8 @@ import engine.proxy.buildLocalSocksInbound
 import engine.proxy.toLocalProxyOptions
 import engine.root.AsteriskdConfig
 import engine.root.AsteriskdMode
+import engine.root.RootBpf2SocksBypassBridgePort
+import engine.root.RootBpf2SocksBypassSocksPort
 import engine.root.RootBpf2SocksCgroupPath
 import engine.root.RootBpf2SocksDefaultBridgePort
 import engine.root.RootBpf2SocksListenAddress
@@ -28,6 +30,7 @@ import engine.root.buildAsteriskdConfig
 import engine.root.bpf2SocksBridgePortValue
 import engine.root.bpf2socksConfigPath
 import engine.root.bpf2socksPidPath
+import engine.root.buildRootBypassDirectInbound
 import engine.root.buildRootSharedProxyInbounds
 import engine.root.rootEbpfDirectCidrPathV4
 import engine.root.rootEbpfDirectCidrPathV6
@@ -47,6 +50,8 @@ internal data class Bpf2SocksConfig(
     val version: Int = 1,
     val bridgeListenAddress: String = RootBpf2SocksListenAddress,
     val bridgePort: Int = RootBpf2SocksDefaultBridgePort,
+    val bypassBridgePort: Int = RootBpf2SocksBypassBridgePort,
+    val bypassSocksPort: Int = RootBpf2SocksBypassSocksPort,
     val tokenIpv4Prefix: String = RootBpf2SocksTokenIpv4Prefix,
     val tokenIpv6Prefix: String = RootBpf2SocksTokenIpv6Prefix,
     val pinnedObjectDir: String = RootBpf2SocksPinnedObjectDir,
@@ -113,6 +118,7 @@ internal fun RootConfigBuildContext.buildBpf2SocksStartConfig(): Bpf2SocksStartC
     val rootStartConfig = buildRootStartConfig(
         inbounds = appState.buildBpf2SocksInbounds(localProxyOptions, socksPort),
         dnsHijackInboundTags = listOf(XrayTags.BPF2SOCKS_INBOUND),
+        bypassDirectInboundTags = listOf(XrayTags.BPF2SOCKS_BYPASS_INBOUND),
     )
     val iptablesConfig = buildRootIptablesConfig(base = Bpf2SocksBasePolicyConfig).copy(enableEbpfRules = true)
     val bpf2SocksPolicy = iptablesConfig.toBpf2SocksPolicy(
@@ -155,6 +161,7 @@ private fun AppState.buildBpf2SocksInbounds(
 ): List<JsonObject> {
     return buildList {
         add(buildBpf2SocksSocksInbound(this@buildBpf2SocksInbounds, socksPort))
+        add(buildRootBypassDirectInbound(XrayTags.BPF2SOCKS_BYPASS_INBOUND, RootBpf2SocksBypassSocksPort))
         add(buildLocalSocksInbound(this@buildBpf2SocksInbounds, XrayTags.LOCAL_SOCKS_INBOUND, localProxyOptions))
         addAll(
             buildRootSharedProxyInbounds(
@@ -203,6 +210,8 @@ private fun RootRuntimeLayout.buildBpf2SocksConfig(
 ): Bpf2SocksConfig {
     return Bpf2SocksConfig(
         bridgePort = bridgePort,
+        bypassBridgePort = RootBpf2SocksBypassBridgePort,
+        bypassSocksPort = RootBpf2SocksBypassSocksPort,
         socksHost = RootBpf2SocksSocksInboundAddress,
         socksPort = socksPort,
         enableIpv6 = enableIpv6,

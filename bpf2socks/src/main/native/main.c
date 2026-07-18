@@ -276,6 +276,8 @@ static int load_runtime_config(
     config->socks_port = (uint16_t)json_uint(json, "socksPort", 0U);
     ok = json_string(json, "bridgeListenAddress", config->listen_host, sizeof(config->listen_host)) && ok;
     config->listen_port = (uint16_t)json_uint(json, "bridgePort", 0U);
+    config->bypass_bridge_port = (uint16_t)json_uint(json, "bypassBridgePort", 0U);
+    config->bypass_socks_port = (uint16_t)json_uint(json, "bypassSocksPort", 0U);
     ok = json_string(json, "pinnedObjectDir", config->pinned_object_dir, sizeof(config->pinned_object_dir)) && ok;
     if (!json_string(json, "cgroupPath", config->cgroup_path, sizeof(config->cgroup_path))) {
         snprintf(config->cgroup_path, sizeof(config->cgroup_path), "%s", BPF2SOCKS_DEFAULT_CGROUP_PATH);
