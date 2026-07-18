@@ -30,7 +30,6 @@ import engine.root.buildAsteriskdConfig
 import engine.root.bpf2SocksBridgePortValue
 import engine.root.bpf2socksConfigPath
 import engine.root.bpf2socksPidPath
-import engine.root.buildRootBypassDirectInbound
 import engine.root.buildRootSharedProxyInbounds
 import engine.root.rootEbpfDirectCidrPathV4
 import engine.root.rootEbpfDirectCidrPathV6
@@ -161,7 +160,7 @@ private fun AppState.buildBpf2SocksInbounds(
 ): List<JsonObject> {
     return buildList {
         add(buildBpf2SocksSocksInbound(this@buildBpf2SocksInbounds, socksPort))
-        add(buildRootBypassDirectInbound(XrayTags.BPF2SOCKS_BYPASS_INBOUND, RootBpf2SocksBypassSocksPort))
+        add(buildBpf2SocksBypassDirectInbound(XrayTags.BPF2SOCKS_BYPASS_INBOUND, RootBpf2SocksBypassSocksPort))
         add(buildLocalSocksInbound(this@buildBpf2SocksInbounds, XrayTags.LOCAL_SOCKS_INBOUND, localProxyOptions))
         addAll(
             buildRootSharedProxyInbounds(
@@ -195,6 +194,35 @@ private fun buildBpf2SocksSocksInbound(
                 put("enabled", appState.enableSniffing)
                 put("destOverride", xraySniffingDestOverrides(appState.effectiveFakeDnsEnabled).toJsonStringArray())
                 put("routeOnly", appState.enableSniffingRouteOnly)
+            },
+        )
+    }
+}
+
+private fun buildBpf2SocksBypassDirectInbound(
+    tag: String,
+    port: Int,
+): JsonObject {
+    return buildJsonObject {
+        put("tag", tag)
+        put("listen", RootBpf2SocksSocksInboundAddress)
+        put("port", port)
+        put("protocol", XrayProtocols.SOCKS)
+        put(
+            "settings",
+            buildJsonObject {
+                put("auth", "noauth")
+                put("udp", true)
+                put("ip", RootBpf2SocksSocksInboundAddress)
+                put("userLevel", 0)
+            },
+        )
+        put(
+            "sniffing",
+            buildJsonObject {
+                put("enabled", true)
+                put("destOverride", listOf("http", "tls", "quic").toJsonStringArray())
+                put("routeOnly", false)
             },
         )
     }

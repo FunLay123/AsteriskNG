@@ -104,7 +104,13 @@ private fun AppState.buildTun2SocksInbounds(
 ): List<JsonObject> {
     return buildList {
         add(buildTun2SocksInbound(this@buildTun2SocksInbounds, socks5ProxyPort))
-        add(buildRootBypassDirectInbound(XrayTags.TUN2SOCKS_BYPASS_INBOUND, RootTun2SocksBypassPort))
+        add(
+            buildRootBypassDirectInbound(
+                XrayTags.TUN2SOCKS_BYPASS_INBOUND,
+                RootTun2SocksBypassPort,
+                sockoptTproxy = "redirect",
+            ),
+        )
         add(buildLocalSocksInbound(this@buildTun2SocksInbounds, XrayTags.LOCAL_SOCKS_INBOUND, localProxyOptions))
         addAll(
             buildRootSharedProxyInbounds(

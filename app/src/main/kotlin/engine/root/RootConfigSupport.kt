@@ -166,7 +166,7 @@ private fun buildRootHttpProxyInbound(
     }
 }
 
-internal fun buildRootBypassDirectInbound(tag: String, port: Int): JsonObject {
+internal fun buildRootBypassDirectInbound(tag: String, port: Int, sockoptTproxy: String = "tproxy"): JsonObject {
     return buildJsonObject {
         put("tag", tag)
         put("port", port)
@@ -185,7 +185,7 @@ internal fun buildRootBypassDirectInbound(tag: String, port: Int): JsonObject {
                 put(
                     "sockopt",
                     buildJsonObject {
-                        put("tproxy", "tproxy")
+                        put("tproxy", sockoptTproxy)
                     },
                 )
             },
